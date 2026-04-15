@@ -133,7 +133,7 @@
         <div v-if="loading" class="message-wrapper bot">
           <div class="message-bubble bot loading-bubble">
             <div class="message-role">Vérificateur</div>
-            <p class="loading-text">Recherche sur internet...</p>
+            <p class="loading-text">{{ loadingStep }}</p>
             <div class="loading-dots">
               <span></span><span></span><span></span>
             </div>
@@ -170,10 +170,11 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { verifyApi } from '../services/api'
 
-const messages  = ref([])
-const input     = ref('')
-const loading   = ref(false)
-const history   = ref([])
+const messages   = ref([])
+const input      = ref('')
+const loading    = ref(false)
+const loadingStep = ref('')
+const history    = ref([])
 const messagesEl = ref(null)
 
 const userId = localStorage.getItem('userId') || null
@@ -236,7 +237,13 @@ const handleSend = async () => {
 
   messages.value.push({ role: 'user', content: query, time: new Date() })
   loading.value = true
+  loadingStep.value = 'Recherche de sources...'
   await scrollToBottom()
+
+  // Après 2s, on passe à l'étape IA (qui peut prendre 30-90s au premier appel)
+  const stepTimer = setTimeout(() => {
+    loadingStep.value = "L'IA analyse votre question..."
+  }, 2000)
 
   try {
     const res = await verifyApi.chat(query, userId)
@@ -249,13 +256,18 @@ const handleSend = async () => {
     await loadHistory()
   } catch (error) {
     console.error(error)
+    const msg = error.response?.data?.error || error.message || ''
     messages.value.push({
       role: 'error',
-      content: 'Erreur lors de la vérification. Vérifiez que le serveur est démarré.',
+      content: msg.includes('504') || msg.includes('timeout') || msg.includes('timed out')
+        ? "Le modèle IA met du temps à démarrer (cold-start). Réessayez dans 30 secondes."
+        : "Erreur lors de la vérification. Vérifiez que le serveur est démarré.",
       time: new Date(),
     })
   } finally {
+    clearTimeout(stepTimer)
     loading.value = false
+    loadingStep.value = ''
     await scrollToBottom()
   }
 }
