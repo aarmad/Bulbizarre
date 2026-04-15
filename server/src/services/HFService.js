@@ -6,15 +6,16 @@ const { searchWeb } = require('./search')
 const MODELS = [
   'mistralai/Mistral-7B-Instruct-v0.3',
   'HuggingFaceH4/zephyr-7b-beta',
-  'tiiuae/falcon-7b-instruct',
+  'microsoft/Phi-3-mini-4k-instruct',
 ]
 
-// ─── HTTP helper (module https natif — bypass fetch/undici/proxy Windows) ─────
+const TIMEOUT_MS = 50_000
+
+// ─── Raw HTTPS POST helper ────────────────────────────────────────────────────
 
 function httpsPost(hostname, path, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body)
-
     const options = {
       hostname,
       path,
@@ -25,83 +26,91 @@ function httpsPost(hostname, path, body, headers = {}) {
         ...headers,
       },
     }
-
     const req = https.request(options, (res) => {
       let data = ''
       res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => resolve({ status: res.statusCode, body: data }))
+      res.on('end',  () => {
+        console.log(`[HF] ${path} → HTTP ${res.statusCode} (${data.length}b)`)
+        // Détecte une réponse HTML = proxy intermédiaire (ex. VestAuth local)
+        if (data.trimStart().startsWith('<')) {
+          return reject(new Error(`Proxy intercepte la requête HTTPS (réponse HTML reçue). Désactivez le proxy ou utilisez MOCK_AI=true en local.`))
+        }
+        resolve({ status: res.statusCode, body: data })
+      })
     })
-
-    req.on('error', reject)
-    req.setTimeout(90000, () => { req.destroy(new Error('HF request timeout 90s')) })
+    req.on('error', (err) => {
+      console.error(`[HF] Erreur réseau: ${err.message}`)
+      reject(err)
+    })
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`Timeout ${TIMEOUT_MS / 1000}s`)))
     req.write(payload)
     req.end()
   })
 }
 
-// ─── Appel HF Inference API ───────────────────────────────────────────────────
+// ─── Appel via endpoint text-generation (legacy, le plus fiable sur free tier) ─
 
-async function callHFModel(model, prompt, maxTokens = 600) {
+async function callTextGeneration(model, prompt, maxTokens = 600) {
+  if (!process.env.HF_TOKEN) throw new Error('HF_TOKEN manquant dans les variables d\'environnement')
+
   const { status, body } = await httpsPost(
     'api-inference.huggingface.co',
     `/models/${model}`,
     {
-      inputs: prompt,
-      parameters: {
-        max_new_tokens  : maxTokens,
-        temperature     : 0.4,
-        do_sample       : true,
-        top_p           : 0.9,
-        return_full_text: false,
-      },
-      options: {
-        wait_for_model: true,
-        use_cache     : false,
-      },
+      inputs    : prompt,
+      parameters: { max_new_tokens: maxTokens, temperature: 0.4, do_sample: true, top_p: 0.9, return_full_text: false },
+      options   : { wait_for_model: true, use_cache: false },
     },
     { Authorization: `Bearer ${process.env.HF_TOKEN}` }
   )
 
+  if (status === 503) {
+    let eta = '?'
+    try { eta = JSON.parse(body).estimated_time || '?' } catch (_) { /* noop */ }
+    throw new Error(`Modèle en cours de chargement (ETA: ${eta}s). Réessayez dans quelques instants.`)
+  }
   if (status !== 200) {
-    // Tenter de lire un message d'erreur JSON
-    try {
-      const err = JSON.parse(body)
-      throw new Error(err.error || `HTTP ${status}`)
-    } catch (_) {
-      throw new Error(`HTTP ${status}: ${body.substring(0, 120)}`)
-    }
+    let msg = `HTTP ${status}`
+    try { msg = JSON.parse(body).error || msg } catch (_) { /* noop */ }
+    console.error(`[HF] ${model} HTTP ${status}:`, body.substring(0, 300))
+    throw new Error(msg)
   }
 
   const data = JSON.parse(body)
-
-  if (Array.isArray(data) && data[0]?.generated_text) {
-    return data[0].generated_text.trim()
-  }
-  if (data.generated_text) {
-    return data.generated_text.trim()
-  }
-
-  throw new Error('Format HF inattendu : ' + body.substring(0, 120))
+  if (Array.isArray(data) && data[0]?.generated_text) return data[0].generated_text.trim()
+  if (data.generated_text) return data.generated_text.trim()
+  throw new Error('Format HF inattendu : ' + body.substring(0, 150))
 }
+
+// ─── Fallback modèles ─────────────────────────────────────────────────────────
 
 async function callWithFallback(prompt, maxTokens = 600) {
   let lastError
   for (const model of MODELS) {
     try {
-      console.log(`[HF] Essai ${model}...`)
-      const result = await callHFModel(model, prompt, maxTokens)
+      console.log(`[HF] Essai ${model}…`)
+      const result = await callTextGeneration(model, prompt, maxTokens)
       console.log(`[HF] ✓ Succès avec ${model}`)
       return result
     } catch (err) {
-      console.warn(`[HF] ✗ ${model}: ${err.message.substring(0, 150)}`)
+      console.warn(`[HF] ✗ ${model}: ${err.message.substring(0, 200)}`)
       lastError = err
     }
   }
   throw lastError
 }
 
-function buildPrompt(instruction, context) {
-  return `### Instruction:\n${instruction}\n\n### Contexte:\n${context}\n\n### Réponse:\n`
+// ─── Prompt builder (format Alpaca / instruct) ────────────────────────────────
+
+function buildPrompt(systemPrompt, userMessage) {
+  // Format compatible Mistral / Zephyr / Phi-3
+  return `<s>[INST] ${systemPrompt}\n\n${userMessage} [/INST]`
+}
+
+// ─── Mock pour développement local (bypass proxy) ────────────────────────────
+
+function mockResponse(query) {
+  return `⚠️ MODE SIMULATION (MOCK_AI=true)\n\nAffirmation analysée : "${query}"\n\n⚠️ INCERTAIN — Réponse simulée. En production, l'IA HuggingFace analysera cette affirmation en se basant sur des sources web réelles.`
 }
 
 // ─── Domaines ─────────────────────────────────────────────────────────────────
@@ -136,10 +145,9 @@ function stripHtml(html) {
     .trim()
 }
 function extractArticleMetadata(html) {
-  const lower = html.toLowerCase()
   return {
-    hasAuthor     : /author|auteur|journalist|"author"/i.test(lower),
-    hasDate       : /datetime=|publishedtime|datemodified|article:published/i.test(lower),
+    hasAuthor     : /author|auteur|journalist|"author"/i.test(html),
+    hasDate       : /datetime=|publishedtime|datemodified|article:published/i.test(html),
     hasSourceLinks: (html.match(/href="https?:\/\//g) || []).length > 3,
   }
 }
@@ -156,19 +164,24 @@ function scoreToVerdict(score) {
 async function checkInformation(query) {
   const sources = await searchWeb(query).catch(() => [])
 
+  if (process.env.MOCK_AI === 'true') {
+    console.log('[HF] Mode MOCK_AI activé — pas d\'appel réel à HuggingFace')
+    return { result: mockResponse(query), sources }
+  }
+
   const contextBlock = sources.length > 0
     ? sources.map((s, i) => `[${i + 1}] ${s.title} (${s.url})\n${s.snippet}`).join('\n\n')
     : 'Aucune source trouvée.'
 
-  const instruction = `Tu es un expert en fact-checking. Analyse l'affirmation suivante en te basant sur les sources fournies. Réponds en français.
-Donne un verdict clair :
+  const systemInstruction = `Tu es un expert en fact-checking. Analyse l'affirmation suivante en te basant sur les sources fournies. Réponds en français.
+Commence ta réponse par un verdict clair :
 - ✅ VRAI si confirmé par les sources
 - ❌ FAUX si contredit par les sources
 - ⚠️ INCERTAIN si les sources sont insuffisantes
 Cite les sources avec [1], [2], etc. Sois factuel et concis (200 mots max).`
 
-  const context = `Affirmation à vérifier : "${query}"\n\nSources disponibles :\n${contextBlock}`
-  const prompt   = buildPrompt(instruction, context)
+  const userMessage = `Affirmation à vérifier : "${query}"\n\nSources disponibles :\n${contextBlock}`
+  const prompt = buildPrompt(systemInstruction, userMessage)
 
   const result = await callWithFallback(prompt, 500)
   return { result, sources }
@@ -182,7 +195,6 @@ async function scoreArticleCredibility(url) {
   let metadata    = { hasAuthor: false, hasDate: false, hasSourceLinks: false }
   let fetchError  = null
 
-  // Utilise aussi le module https pour fetcher l'article (cohérent)
   try {
     const urlObj = new URL(url)
     const { status, body } = await new Promise((resolve, reject) => {
@@ -190,10 +202,7 @@ async function scoreArticleCredibility(url) {
         hostname: urlObj.hostname,
         path    : urlObj.pathname + urlObj.search,
         method  : 'GET',
-        headers : {
-          'User-Agent': 'Mozilla/5.0 (compatible; BulbizarreFactChecker/1.0)',
-          Accept      : 'text/html',
-        },
+        headers : { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
       }
       const req = https.request(options, (res) => {
         let data = ''
@@ -201,10 +210,9 @@ async function scoreArticleCredibility(url) {
         res.on('end', () => resolve({ status: res.statusCode, body: data }))
       })
       req.on('error', reject)
-      req.setTimeout(10000, () => { req.destroy(new Error('Article fetch timeout')) })
+      req.setTimeout(10000, () => req.destroy(new Error('Article fetch timeout')))
       req.end()
     })
-
     if (status !== 200) throw new Error(`HTTP ${status}`)
     articleText = stripHtml(body).substring(0, 2500)
     metadata    = extractArticleMetadata(body)
@@ -220,30 +228,31 @@ async function scoreArticleCredibility(url) {
     return {
       score   : base,
       verdict : scoreToVerdict(base),
-      analysis: fetchError
-        ? `Impossible d'accéder à l'article : ${fetchError}. Score basé sur la réputation du domaine "${domain}".`
-        : 'Contenu non disponible.',
+      analysis: fetchError ? `Impossible d'accéder à l'article : ${fetchError}. Score basé sur la réputation du domaine "${domain}".` : 'Contenu non disponible.',
       domain, metadata,
     }
   }
 
-  let llmScore = 25, llmVerdict = '', llmAnalysis = ''
+  if (process.env.MOCK_AI === 'true') {
+    const base = Math.min(100, domainScore + structureScore + 30)
+    return { score: base, verdict: scoreToVerdict(base), analysis: '[MOCK] Analyse simulée.', domain, metadata }
+  }
 
+  let llmScore = 25, llmVerdict = '', llmAnalysis = ''
   try {
-    const instruction = `Tu es un expert en crédibilité des médias. Analyse cet article et réponds UNIQUEMENT dans ce format exact :
+    const systemInstruction = `Tu es un expert en crédibilité des médias. Analyse cet article et réponds UNIQUEMENT dans ce format :
 SCORE: [nombre entre 0 et 50]
 VERDICT: [Excellent / Fiable / Mitigé / Douteux / Trompeur]
-ANALYSE: [2 phrases d'explication en français]`
+ANALYSE: [2 phrases en français]`
 
-    const context = `URL : ${url}\nDomaine : ${domain} | Auteur : ${metadata.hasAuthor ? 'oui' : 'non'} | Date : ${metadata.hasDate ? 'oui' : 'non'}\n\nExtrait :\n${articleText}`
-    const response = await callWithFallback(buildPrompt(instruction, context), 200)
+    const userMessage = `URL : ${url}\nDomaine : ${domain} | Auteur : ${metadata.hasAuthor ? 'oui' : 'non'} | Date : ${metadata.hasDate ? 'oui' : 'non'}\n\nExtrait :\n${articleText}`
+    const response = await callWithFallback(buildPrompt(systemInstruction, userMessage), 200)
 
     const scoreM   = response.match(/SCORE:\s*(\d+)/)
     const verdictM = response.match(/VERDICT:\s*(.+)/m)
     const analyseM = response.match(/ANALYSE:\s*([\s\S]+)/)
-
-    if (scoreM)   llmScore   = Math.min(50, parseInt(scoreM[1], 10))
-    if (verdictM) llmVerdict = verdictM[1].trim()
+    if (scoreM)   llmScore    = Math.min(50, parseInt(scoreM[1], 10))
+    if (verdictM) llmVerdict  = verdictM[1].trim()
     if (analyseM) llmAnalysis = analyseM[1].trim()
   } catch (err) {
     console.error('[HF] Analyse URL échouée :', err.message)
