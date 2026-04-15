@@ -1,44 +1,74 @@
-const HFService = require('../services/HFService');
-const History = require('../models/History');
+const HFService = require('../services/HFService')
+const History = require('../models/History')
 
 const handleChat = async (req, res) => {
-    try {
-        const { query, userId } = req.body;
-        const result = await HFService.checkInformation(query);
+  const { query, userId } = req.body
 
-        if (userId) {
-            const entry = new History({
-                userId,
-                type: 'chat',
-                content: { query, response: result }
-            });
-            await entry.save();
-        }
+  if (!query || !query.trim()) {
+    return res.status(400).json({ error: 'La question est requise.' })
+  }
 
-        res.json({ result });
-    } catch (error) {
-        res.status(500).json({ error: 'Error in chatbot verification' });
+  try {
+    const { result, sources } = await HFService.checkInformation(query.trim())
+
+    if (userId) {
+      await History.create({
+        userId,
+        type: 'chat',
+        content: { query, response: result, sources },
+      })
     }
-};
+
+    res.json({ result, sources })
+  } catch (error) {
+    console.error('handleChat error:', error.message)
+    res.status(500).json({ error: "Erreur lors de la vérification. Réessayez dans quelques instants." })
+  }
+}
 
 const handleURLVerify = async (req, res) => {
-    try {
-        const { url, userId } = req.body;
-        const result = await HFService.scoreArticleCredibility(url);
+  const { url, userId } = req.body
 
-        if (userId) {
-            const entry = new History({
-                userId,
-                type: 'url_verify',
-                content: { url, result }
-            });
-            await entry.save();
-        }
+  if (!url || !url.trim()) {
+    return res.status(400).json({ error: "L'URL est requise." })
+  }
 
-        res.json(result);
-    } catch (error) {
-        res.status(500).json({ error: 'Error in URL verification' });
+  try {
+    const result = await HFService.scoreArticleCredibility(url.trim())
+
+    if (userId) {
+      await History.create({
+        userId,
+        type: 'url_verify',
+        content: { url, result },
+      })
     }
-};
 
-module.exports = { handleChat, handleURLVerify };
+    res.json(result)
+  } catch (error) {
+    console.error('handleURLVerify error:', error.message)
+    res.status(500).json({ error: "Erreur lors de l'analyse de l'article." })
+  }
+}
+
+const handleHistory = async (req, res) => {
+  const { userId } = req.query
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId requis.' })
+  }
+
+  try {
+    const entries = await History.find({ userId })
+      .sort({ timestamp: -1 })
+      .limit(30)
+      .lean()
+
+    res.json(entries)
+  } catch (error) {
+    console.error('handleHistory error:', error.message)
+    res.status(500).json({ error: "Erreur lors de la récupération de l'historique." })
+  }
+}
+
+module.exports = { handleChat, handleURLVerify, handleHistory }

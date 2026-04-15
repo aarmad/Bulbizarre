@@ -1,11 +1,11 @@
+const dotenv = require('dotenv');
+dotenv.config(); // ← doit être avant tout autre require qui lit process.env
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const authRoutes = require('./routes/auth');
 const verifyRoutes = require('./routes/verify');
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
