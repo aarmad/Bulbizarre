@@ -1,10 +1,13 @@
-const { Router } = require('express')
-const authMiddleware = require('../middleware/authMiddleware')
-const { getMyStats, getDashboardStats } = require('../controllers/StatsController')
+const { Router } = require("express");
+const authMiddleware = require("../middleware/authMiddleware");
+const {
+  getMyStats,
+  getDashboardStats,
+} = require("../controllers/StatsController");
 
-const router = Router()
+const router = Router();
 
-router.get('/my-stats', authMiddleware, getMyStats)
-router.get('/dashboard', getDashboardStats)
+router.get("/my-stats", authMiddleware, getMyStats);
+router.get("/dashboard", getDashboardStats);
 
-module.exports = router
+module.exports = router;

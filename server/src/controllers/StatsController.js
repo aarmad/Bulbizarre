@@ -1,55 +1,59 @@
-const History = require('../models/History')
-const User = require('../models/User')
+const History = require("../models/History");
+const User = require("../models/User");
 
 const getMyStats = async (req, res) => {
   try {
-    const userId = req.user?.id
+    const userId = req.user?.id;
 
     if (!userId) {
-      return res.status(401).json({ error: 'Non authentifié' })
+      return res.status(401).json({ error: "Non authentifié" });
     }
 
     // Total de vérifications
-    const totalVerifications = await History.countDocuments({ userId })
+    const totalVerifications = await History.countDocuments({ userId });
 
     // Vérifications par type
     const byType = await History.aggregate([
-      { $match: { userId: require('mongoose').Types.ObjectId(userId) } },
+      { $match: { userId: require("mongoose").Types.ObjectId(userId) } },
       {
         $group: {
-          _id: '$type',
-          count: { $sum: 1 }
-        }
-      }
-    ])
+          _id: "$type",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
 
     // Vérifications ce mois-ci
-    const thisMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+    const thisMonthStart = new Date(
+      new Date().getFullYear(),
+      new Date().getMonth(),
+      1,
+    );
     const thisMonthCount = await History.countDocuments({
       userId,
-      timestamp: { $gte: thisMonthStart }
-    })
+      timestamp: { $gte: thisMonthStart },
+    });
 
     // Vérifications cette semaine
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const thisWeekCount = await History.countDocuments({
       userId,
-      timestamp: { $gte: weekAgo }
-    })
+      timestamp: { $gte: weekAgo },
+    });
 
     // Vérifications aujourd'hui
-    const todayStart = new Date()
-    todayStart.setHours(0, 0, 0, 0)
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
     const todayCount = await History.countDocuments({
       userId,
-      timestamp: { $gte: todayStart }
-    })
+      timestamp: { $gte: todayStart },
+    });
 
     // Dernières vérifications
     const recentVerifications = await History.find({ userId })
       .sort({ timestamp: -1 })
       .limit(5)
-      .lean()
+      .lean();
 
     const stats = {
       total: totalVerifications,
@@ -57,15 +61,17 @@ const getMyStats = async (req, res) => {
       thisMonth: thisMonthCount,
       thisWeek: thisWeekCount,
       today: todayCount,
-      recentVerifications
-    }
+      recentVerifications,
+    };
 
-    res.json(stats)
+    res.json(stats);
   } catch (error) {
-    console.error('getMyStats error:', error)
-    res.status(500).json({ error: 'Erreur lors de la récupération des statistiques' })
+    console.error("getMyStats error:", error);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des statistiques" });
   }
-}
+};
 
 const getDashboardStats = async (req, res) => {
   try {
@@ -75,26 +81,28 @@ const getDashboardStats = async (req, res) => {
       verificationsByType: await History.aggregate([
         {
           $group: {
-            _id: '$type',
-            count: { $sum: 1 }
-          }
-        }
+            _id: "$type",
+            count: { $sum: 1 },
+          },
+        },
       ]),
       verificationsThisMonth: await History.countDocuments({
         timestamp: {
-          $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1)
-        }
-      })
-    }
+          $gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+        },
+      }),
+    };
 
-    res.json(stats)
+    res.json(stats);
   } catch (error) {
-    console.error('getDashboardStats error:', error)
-    res.status(500).json({ error: 'Erreur lors de la récupération des statistiques' })
+    console.error("getDashboardStats error:", error);
+    res
+      .status(500)
+      .json({ error: "Erreur lors de la récupération des statistiques" });
   }
-}
+};
 
 module.exports = {
   getMyStats,
-  getDashboardStats
-}
+  getDashboardStats,
+};
