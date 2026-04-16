@@ -1,48 +1,47 @@
 const https  = require('https')
 const { searchWeb } = require('./search')
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-// Endpoint actuel HF (depuis mi-2024) : router.huggingface.co/hf-inference/
-// L'ancien api-inference.huggingface.co/models/... retourne 404
+// ─── Config Groq ──────────────────────────────────────────────────────────────
+// Groq : gratuit, ~500 tokens/sec, API compatible OpenAI
+// Clé sur console.groq.com → API Keys → GROQ_API_KEY
 
-const HF_HOSTNAME = 'router.huggingface.co'
+const GROQ_HOSTNAME = 'api.groq.com'
+const GROQ_PATH     = '/openai/v1/chat/completions'
 
+// Modèles Groq (du plus rapide au plus puissant)
 const MODELS = [
-  'mistralai/Mistral-7B-Instruct-v0.3',
-  'HuggingFaceH4/zephyr-7b-beta',
-  'microsoft/Phi-3-mini-4k-instruct',
+  'llama-3.1-8b-instant',      // très rapide, bon pour le fact-checking simple
+  'llama-3.3-70b-versatile',   // puissant, un peu plus lent
+  'mixtral-8x7b-32768',        // bon compromis
 ]
 
-const TIMEOUT_MS = 50_000  // < 60 s (limite Vercel)
+const TIMEOUT_MS = 30_000  // Groq répond en < 5s, 30s = largement suffisant
 
 // ─── HTTPS POST helper ────────────────────────────────────────────────────────
 
-function httpsPost(path, body) {
+function httpsPost(hostname, path, body, apiKey) {
   return new Promise((resolve, reject) => {
-    if (!process.env.HF_TOKEN) {
-      return reject(new Error('HF_TOKEN absent des variables d\'environnement'))
-    }
     const payload = JSON.stringify(body)
     const options = {
-      hostname: HF_HOSTNAME,
+      hostname,
       path,
       method : 'POST',
       headers: {
         'Content-Type'  : 'application/json',
         'Content-Length': Buffer.byteLength(payload),
-        Authorization   : `Bearer ${process.env.HF_TOKEN}`,
+        Authorization   : `Bearer ${apiKey}`,
       },
     }
     const req = https.request(options, (res) => {
       let data = ''
       res.on('data', (chunk) => { data += chunk })
       res.on('end', () => {
-        console.log(`[HF] ${HF_HOSTNAME}${path} → HTTP ${res.statusCode}`)
+        console.log(`[AI] ${hostname}${path} → HTTP ${res.statusCode}`)
         resolve({ status: res.statusCode, body: data })
       })
     })
     req.on('error', (err) => {
-      console.error('[HF] Erreur réseau :', err.message)
+      console.error('[AI] Erreur réseau :', err.message)
       reject(err)
     })
     req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`Timeout ${TIMEOUT_MS / 1000}s`)))
@@ -51,42 +50,44 @@ function httpsPost(path, body) {
   })
 }
 
-// ─── Chat Completions (OpenAI-compatible, nouveau router HF) ──────────────────
+// ─── Appel Groq ───────────────────────────────────────────────────────────────
 
 async function callModel(model, messages, maxTokens = 600) {
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) throw new Error('GROQ_API_KEY absent des variables d\'environnement')
+
   const { status, body } = await httpsPost(
-    '/hf-inference/v1/chat/completions',
-    { model, messages, max_tokens: maxTokens, temperature: 0.4, top_p: 0.9, stream: false }
+    GROQ_HOSTNAME,
+    GROQ_PATH,
+    { model, messages, max_tokens: maxTokens, temperature: 0.4, top_p: 0.9, stream: false },
+    apiKey
   )
 
-  if (status === 503) {
-    throw new Error('Modèle en cours de chargement, réessayez dans quelques instants.')
-  }
   if (status !== 200) {
     let msg = `HTTP ${status}`
-    try { msg = JSON.parse(body).error || msg } catch (_) { /* noop */ }
-    console.error(`[HF] ${model} erreur:`, body.substring(0, 300))
+    try { msg = JSON.parse(body).error?.message || JSON.parse(body).error || msg } catch (_) { /* noop */ }
+    console.error(`[AI] ${model} erreur:`, body.substring(0, 300))
     throw new Error(msg)
   }
 
   const data = JSON.parse(body)
   const text = data?.choices?.[0]?.message?.content
-  if (!text) throw new Error('Format HF inattendu : ' + body.substring(0, 200))
+  if (!text) throw new Error('Format inattendu : ' + body.substring(0, 200))
   return text.trim()
 }
 
-// ─── Fallback séquentiel sur les modèles ─────────────────────────────────────
+// ─── Fallback séquentiel ──────────────────────────────────────────────────────
 
 async function callWithFallback(messages, maxTokens = 600) {
   let lastError
   for (const model of MODELS) {
     try {
-      console.log(`[HF] Essai ${model}…`)
+      console.log(`[AI] Essai ${model}…`)
       const result = await callModel(model, messages, maxTokens)
-      console.log(`[HF] ✓ ${model}`)
+      console.log(`[AI] ✓ ${model}`)
       return result
     } catch (err) {
-      console.warn(`[HF] ✗ ${model}: ${err.message.substring(0, 200)}`)
+      console.warn(`[AI] ✗ ${model}: ${err.message.substring(0, 200)}`)
       lastError = err
     }
   }
@@ -219,7 +220,7 @@ async function scoreArticleCredibility(url) {
     const messages = [
       {
         role   : 'system',
-        content: `Tu es un expert en crédibilité des médias. Analyse l'article fourni et réponds UNIQUEMENT dans ce format exact :
+        content: `Tu es un expert en crédibilité des médias. Analyse l'article et réponds UNIQUEMENT dans ce format exact :
 SCORE: [nombre entier entre 0 et 50]
 VERDICT: [Excellent / Fiable / Mitigé / Douteux / Trompeur]
 ANALYSE: [2 phrases d'explication en français]`,
@@ -237,7 +238,7 @@ ANALYSE: [2 phrases d'explication en français]`,
     if (verdictM) llmVerdict  = verdictM[1].trim()
     if (analyseM) llmAnalysis = analyseM[1].trim()
   } catch (err) {
-    console.error('[HF] Analyse URL échouée :', err.message)
+    console.error('[AI] Analyse URL échouée :', err.message)
     llmAnalysis = 'Analyse IA indisponible. Score calculé sur les critères structurels.'
   }
 
