@@ -1,16 +1,20 @@
 {
-  "name": "bullbizarre",
+  "name": "bulbizarre",
   "version": "1.0.0",
-  "description": "��#\u0000 \u0000B\u0000u\u0000l\u0000b\u0000i\u0000z\u0000a\u0000r\u0000r\u0000e\u0000\r\u0000 \u0000",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Fake News Fact-Checker",
   "type": "commonjs",
-  "devDependencies": {
-    "typescript": "^6.0.2"
+  "scripts": {
+    "build":      "cd client && npm install && npm run build",
+    "start":      "node server/src/index.js",
+    "dev:server": "cd server && npm run dev",
+    "dev:client": "cd client && npm run dev"
+  },
+  "dependencies": {
+    "bcrypt":        "^6.0.0",
+    "cors":          "^2.8.6",
+    "dotenv":        "^17.4.2",
+    "express":       "^5.2.1",
+    "jsonwebtoken":  "^9.0.3",
+    "mongoose":      "^9.4.1"
   }
 }
