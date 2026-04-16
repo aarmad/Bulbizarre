@@ -267,4 +267,59 @@ ANALYSE: [2 phrases d'explication en français]`,
   }
 }
 
-module.exports = { checkInformation, scoreArticleCredibility }
+// ─── verifyHeadline ───────────────────────────────────────────────────────────
+
+async function verifyHeadline(headline) {
+  const systemPrompt = `Tu es un expert en détection de fausses nouvelles (fact-checking). 
+Analyse le titre d'article fourni et réponds UNIQUEMENT dans ce format exact en JSON :
+{
+  "verdict": "VRAI|FAUX|INDÉTERMINÉ",
+  "score": <nombre entier entre 0 et 100>,
+  "explanation": "<explication courte en français (2-3 phrases)>"
+}
+
+Évalue la plausibilité et la probabilité que ce titre soit vrai ou faux basé sur tes connaissances.
+- VRAI : titre vraisemblable et cohérent avec la réalité
+- FAUX : titre clairement faux ou très improbable
+- INDÉTERMINÉ : titre nécessitant vérification externe`
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user',   content: `Vérifiez ce titre : "${headline}"` },
+  ]
+
+  try {
+    const result = await callWithFallback(messages, 300)
+    
+    // Essayer de parser la réponse JSON
+    const jsonMatch = result.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0])
+      return {
+        verdict: parsed.verdict || 'INDÉTERMINÉ',
+        score: Math.min(100, Math.max(0, parsed.score || 50)),
+        explanation: parsed.explanation || result
+      }
+    }
+
+    // Fallback : vérification basique du contenu
+    const isFake = result.toLowerCase().includes('faux') || 
+                   result.toLowerCase().includes('fake') ||
+                   result.toLowerCase().includes('pas vrai')
+    
+    return {
+      verdict: isFake ? 'FAUX' : 'VRAI',
+      score: isFake ? 30 : 75,
+      explanation: result
+    }
+  } catch (error) {
+    console.error('[AI] Erreur verifyHeadline :', error.message)
+    return {
+      verdict: 'INDÉTERMINÉ',
+      score: 50,
+      explanation: `Erreur lors de la vérification : ${error.message}`
+    }
+  }
+}
+
+module.exports = { checkInformation, scoreArticleCredibility, verifyHeadline }

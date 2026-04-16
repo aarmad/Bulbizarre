@@ -1,12 +1,16 @@
 const { Router } = require('express')
-const { handleChat, handleURLVerify, handleHistory } = require('../controllers/VerifyController')
+const { handleChat, handleURLVerify, handleHeadlineVerify, handleHistory, handleSearchHistory, handleDeleteHistoryEntry, handleClearHistory } = require('../controllers/VerifyController')
 const https = require('https')
 
 const router = Router()
 
 router.post('/chat',    handleChat)
 router.post('/url',     handleURLVerify)
+router.post('/headline', handleHeadlineVerify)
 router.get('/history',  handleHistory)
+router.get('/history/search', handleSearchHistory)
+router.delete('/history/:id', handleDeleteHistoryEntry)
+router.delete('/history', handleClearHistory)
 
 // ─── Diagnostic : vérifie la connectivité HF ─────────────────────────────────
 router.get('/ping', (_req, res) => {

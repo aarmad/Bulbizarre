@@ -51,6 +51,31 @@ const handleURLVerify = async (req, res) => {
   }
 }
 
+const handleHeadlineVerify = async (req, res) => {
+  const { headline, userId } = req.body
+
+  if (!headline || !headline.trim()) {
+    return res.status(400).json({ error: 'Le titre est requis.' })
+  }
+
+  try {
+    const result = await HFService.verifyHeadline(headline.trim())
+
+    if (userId) {
+      await History.create({
+        userId,
+        type: 'headline_verify',
+        content: { headline, result },
+      })
+    }
+
+    res.json(result)
+  } catch (error) {
+    console.error('handleHeadlineVerify error:', error.message)
+    res.status(500).json({ error: "Erreur lors de la vérification du titre." })
+  }
+}
+
 const handleHistory = async (req, res) => {
   const { userId } = req.query
 
@@ -71,4 +96,75 @@ const handleHistory = async (req, res) => {
   }
 }
 
-module.exports = { handleChat, handleURLVerify, handleHistory }
+const handleSearchHistory = async (req, res) => {
+  const { userId } = req.query
+  const { q } = req.query
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId requis.' })
+  }
+
+  if (!q || !q.trim()) {
+    return res.status(400).json({ error: 'Terme de recherche requis.' })
+  }
+
+  try {
+    const entries = await History.find({
+      userId,
+      $or: [
+        { 'content.headline': { $regex: q, $options: 'i' } },
+        { 'content.query': { $regex: q, $options: 'i' } },
+        { 'content.url': { $regex: q, $options: 'i' } },
+      ],
+    })
+      .sort({ timestamp: -1 })
+      .lean()
+
+    res.json(entries)
+  } catch (error) {
+    console.error('handleSearchHistory error:', error.message)
+    res.status(500).json({ error: "Erreur lors de la recherche." })
+  }
+}
+
+const handleDeleteHistoryEntry = async (req, res) => {
+  const { id } = req.params
+  const { userId } = req.query
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId requis.' })
+  }
+
+  try {
+    const result = await History.findOneAndDelete({ _id: id, userId })
+
+    if (!result) {
+      return res.status(404).json({ error: 'Entrée non trouvée.' })
+    }
+
+    res.json({ message: 'Entrée supprimée.' })
+  } catch (error) {
+    console.error('handleDeleteHistoryEntry error:', error.message)
+    res.status(500).json({ error: "Erreur lors de la suppression." })
+  }
+}
+
+const handleClearHistory = async (req, res) => {
+  const { userId } = req.query
+
+  if (!userId) {
+    return res.status(400).json({ error: 'userId requis.' })
+  }
+
+  try {
+    await History.deleteMany({ userId })
+
+    res.json({ message: "Historique vidé." })
+  } catch (error) {
+    console.error('handleClearHistory error:', error.message)
+    res.status(500).json({ error: "Erreur lors du nettoyage de l'historique." })
+  }
+}
+
+module.exports = { handleChat, handleURLVerify, handleHeadlineVerify, handleHistory, handleSearchHistory, handleDeleteHistoryEntry, handleClearHistory }
+
