@@ -20,9 +20,11 @@ export const authApi = {
 }
 
 export const verifyApi = {
-  chat:    (query, userId) => api.post('/verify/chat', { query, userId }),
-  url:     (url, userId)   => api.post('/verify/url',  { url, userId }),
-  history: (userId)        => api.get('/verify/history', { params: { userId } }),
+  chat:          (query, userId) => api.post('/verify/chat', { query, userId }),
+  url:           (url, userId)   => api.post('/verify/url',  { url, userId }),
+  history:       (userId)        => api.get('/verify/history', { params: { userId } }),
+  deleteHistory: (id, userId)    => api.delete(`/verify/history/${id}`, { params: { userId } }),
+  clearHistory:  (userId)        => api.delete('/verify/history', { params: { userId } }),
 }
 
 export default api

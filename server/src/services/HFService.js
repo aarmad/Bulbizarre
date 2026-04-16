@@ -195,18 +195,17 @@ async function checkInformation(query) {
     : null;
 
   const systemPrompt = hasSources
-    ? `Tu es un expert en fact-checking. Analyse l'affirmation en te basant UNIQUEMENT sur les sources fournies. Ne fais pas appel à tes connaissances générales si les sources le couvrent déjà.
+    ? `Tu es un expert en fact-checking. Analyse l'affirmation en te basant UNIQUEMENT sur les sources fournies.
 
 Réponds en français avec cette structure :
-1. Verdict en première ligne : ✅ VRAI, ❌ FAUX, ou ⚠️ INCERTAIN
+1. Première ligne obligatoirement : [VRAI], [FAUX], ou [INCERTAIN]
 2. Explication (3-5 phrases) basée sur les sources
 3. Cite les sources utilisées : [1], [2], etc.
 4. Si les sources ne couvrent pas directement le sujet, dis-le.
 
 Sois factuel, précis, concis (200 mots max).`
     : `Tu es un expert en fact-checking. Aucune source web n'a été trouvée.
-Réponds en français en indiquant qu'aucune source n'a pu être vérifiée, puis donne ton analyse basée sur tes connaissances en précisant ce caractère.
-Format : ⚠️ INCERTAIN (sources indisponibles), puis ton analyse.`;
+Réponds en français. Commence obligatoirement par [INCERTAIN] puis donne ton analyse basée sur tes connaissances en précisant ce caractère.`;
 
   const userMessage = hasSources
     ? `Affirmation à vérifier : "${query}"\n\nSources trouvées :\n\n${contextBlock}`
