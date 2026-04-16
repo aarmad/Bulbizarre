@@ -1,37 +1,67 @@
 /**
- * Service de recherche web — DuckDuckGo + Wikipedia FR + Wikipedia EN
- * Amélioration : recherche les entités clés (mots capitalisés) en plus de la query complète
+ * Service de recherche web
+ * Primaire  : Google via Serper.dev (vrais résultats Google, actualité incluse)
+ * Fallback  : Wikipedia FR + EN (si Serper indisponible ou quota épuisé)
  */
 const https = require('https')
 
-const TIMEOUT_MS = 8000
+const TIMEOUT_MS = 10_000
 
-// ─── HTTP GET helper ──────────────────────────────────────────────────────────
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
 
 function httpsGet(url) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url)
-    const options = {
-      hostname: urlObj.hostname,
-      path    : urlObj.pathname + urlObj.search,
-      method  : 'GET',
-      headers : { 'User-Agent': 'BulbizarreSearch/1.0', Accept: 'application/json' },
-    }
-
-    const req = https.request(options, (res) => {
-      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
-        return httpsGet(res.headers.location).then(resolve).catch(reject)
+    const req = https.request(
+      {
+        hostname: urlObj.hostname,
+        path    : urlObj.pathname + urlObj.search,
+        method  : 'GET',
+        headers : { 'User-Agent': 'BulbizarreSearch/1.0', Accept: 'application/json' },
+      },
+      (res) => {
+        if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+          return httpsGet(res.headers.location).then(resolve).catch(reject)
+        }
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)) } catch (_) { resolve(data) }
+        })
       }
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)) }
-        catch (_) { resolve(data) }
-      })
-    })
-
+    )
     req.on('error', reject)
-    req.setTimeout(TIMEOUT_MS, () => { req.destroy(new Error('Search timeout')) })
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('Timeout')))
+    req.end()
+  })
+}
+
+function httpsPost(hostname, path, body, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body)
+    const req = https.request(
+      {
+        hostname,
+        path,
+        method : 'POST',
+        headers: {
+          'Content-Type'  : 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          ...headers,
+        },
+      },
+      (res) => {
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, data: JSON.parse(data) }) }
+          catch (_) { resolve({ status: res.statusCode, data }) }
+        })
+      }
+    )
+    req.on('error', reject)
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error('Timeout')))
+    req.write(payload)
     req.end()
   })
 }
@@ -43,131 +73,127 @@ function withTimeout(promise, ms) {
   ])
 }
 
-// ─── Extraction des entités clés (noms propres, termes importants) ────────────
+// ─── Serper.dev (Google Search) ───────────────────────────────────────────────
 
-function extractKeyTerms(query) {
-  // Supprime les mots communs français et extrait les termes significatifs
-  const stopwords = new Set([
-    'le','la','les','un','une','des','est','sont','a','de','du','en','et','ou',
-    'au','aux','ce','cet','cette','ces','il','elle','ils','elles','on','que',
-    'qui','quoi','comment','pourquoi','quand','où','quel','quelle','quels','quelles',
-    'avec','sans','pour','par','sur','sous','dans','entre','vers','mais','donc',
-    'car','ni','si','je','tu','nous','vous','me','te','se','lui','leur','leurs',
-    'bien','très','plus','moins','aussi','encore','toujours','jamais','pas','ne',
-    'avoir','être','fait','fait','été','vrai','faux','réel','vraiment',
-    'est-ce','est','avait','avait','peut','pouvait','doit','devait',
-    'il','elle','ils','elles','on','y','en',
-    'a-t-il','a-t-elle','ont-ils','ont-elles',
-  ])
+async function searchSerper(query) {
+  const apiKey = process.env.SERPER_API_KEY
+  if (!apiKey) {
+    console.warn('[Search] SERPER_API_KEY absent — fallback Wikipedia')
+    return []
+  }
 
-  const words = query
-    .replace(/[?!.,;:«»"'()]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 2)
-    .filter(w => !stopwords.has(w.toLowerCase()))
+  const { status, data } = await httpsPost(
+    'google.serper.dev',
+    '/search',
+    { q: query, num: 8, hl: 'fr', gl: 'fr' },
+    { 'X-API-KEY': apiKey }
+  )
 
-  // Favorise les mots capitalisés (noms propres)
-  const capitalized = words.filter(w => /^[A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ]/.test(w))
-  const keyTerms    = capitalized.length > 0 ? capitalized : words
-
-  return [...new Set(keyTerms)].slice(0, 4).join(' ')
-}
-
-// ─── Sources ──────────────────────────────────────────────────────────────────
-
-async function searchDuckDuckGo(query) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_redirect=1&no_html=1&skip_disambig=1`
-  const data = await httpsGet(url)
-  if (typeof data !== 'object') return []
+  if (status !== 200 || typeof data !== 'object') {
+    console.warn('[Search] Serper HTTP', status)
+    return []
+  }
 
   const sources = []
-  if (data.AbstractText && data.AbstractURL && data.AbstractText.length > 50) {
+
+  // Boîte de réponse directe (ex: "Qui est X ?")
+  if (data.answerBox?.answer || data.answerBox?.snippet) {
     sources.push({
-      title  : data.Heading || query,
-      url    : data.AbstractURL,
-      snippet: data.AbstractText.substring(0, 500),
+      title  : data.answerBox.title || query,
+      url    : data.answerBox.link  || `https://google.com/search?q=${encodeURIComponent(query)}`,
+      snippet: (data.answerBox.answer || data.answerBox.snippet).substring(0, 500),
+      date   : null,
     })
   }
-  // Réponse directe (Answer)
-  if (data.Answer && data.AnswerType) {
+
+  // Résultats organiques Google
+  for (const r of (data.organic || []).slice(0, 6)) {
+    if (!r.link || !r.snippet) continue
     sources.push({
-      title  : `Réponse directe : ${data.AnswerType}`,
-      url    : data.AbstractURL || `https://duckduckgo.com/?q=${encodeURIComponent(query)}`,
-      snippet: String(data.Answer).substring(0, 300),
+      title  : r.title   || r.link,
+      url    : r.link,
+      snippet: (r.snippet + (r.date ? ` (${r.date})` : '')).substring(0, 500),
+      date   : r.date || null,
     })
   }
-  for (const topic of (data.RelatedTopics || []).slice(0, 3)) {
-    if (!topic.FirstURL || !topic.Text || topic.Text.length < 40) continue
+
+  // Knowledge Graph (fiche entité Google)
+  if (data.knowledgeGraph?.description) {
     sources.push({
-      title  : topic.Text.split(' - ')[0].substring(0, 100),
-      url    : topic.FirstURL,
-      snippet: topic.Text.substring(0, 300),
+      title  : data.knowledgeGraph.title || query,
+      url    : data.knowledgeGraph.descriptionLink || data.knowledgeGraph.website || '',
+      snippet: data.knowledgeGraph.description.substring(0, 500),
+      date   : null,
     })
   }
+
+  console.log(`[Search] Serper → ${sources.length} résultats Google`)
   return sources
 }
 
+// ─── Wikipedia (fallback) ─────────────────────────────────────────────────────
+
 async function searchWikipediaLang(query, lang = 'fr') {
-  // Étape 1 : recherche
-  const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3&srprop=snippet`
+  const searchUrl = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&srlimit=3`
   const searchData = await httpsGet(searchUrl)
   const pages = searchData?.query?.search || []
 
   const sources = []
-  for (const page of pages.slice(0, 3)) {
+  for (const page of pages.slice(0, 2)) {
     try {
-      // Étape 2 : résumé complet via REST (plus riche que le snippet de l'API)
       const summaryUrl = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(page.title)}`
       const summary = await httpsGet(summaryUrl)
       if (!summary.extract || summary.extract.length < 80) continue
-
       sources.push({
         title  : summary.title,
         url    : summary.content_urls?.desktop?.page || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(page.title)}`,
         snippet: summary.extract.substring(0, 500),
+        date   : null,
       })
     } catch (_) { /* continuer */ }
   }
   return sources
 }
 
+// ─── Point d'entrée principal ─────────────────────────────────────────────────
+
 async function searchWeb(query) {
-  // Recherche parallèle : query complète + entités clés pour Wikipedia
-  const keyTerms = extractKeyTerms(query)
-  const useKeyTerms = keyTerms.length > 3 && keyTerms.toLowerCase() !== query.toLowerCase()
+  const hasSerper = !!process.env.SERPER_API_KEY
 
-  console.log(`[Search] Query: "${query}" | KeyTerms: "${keyTerms}"`)
+  let sources = []
 
-  const tasks = [
-    withTimeout(searchDuckDuckGo(query),          TIMEOUT_MS),
-    withTimeout(searchWikipediaLang(query, 'fr'), TIMEOUT_MS),
-    withTimeout(searchWikipediaLang(query, 'en'), TIMEOUT_MS),
-  ]
-
-  // Si les entités clés diffèrent de la query, on fait une recherche supplémentaire
-  if (useKeyTerms) {
-    tasks.push(withTimeout(searchWikipediaLang(keyTerms, 'fr'), TIMEOUT_MS))
-    tasks.push(withTimeout(searchWikipediaLang(keyTerms, 'en'), TIMEOUT_MS))
+  if (hasSerper) {
+    // Google en premier (résultats récents et pertinents)
+    const [serperResult, wikifrResult, wikienResult] = await Promise.allSettled([
+      withTimeout(searchSerper(query),          TIMEOUT_MS),
+      withTimeout(searchWikipediaLang(query, 'fr'), TIMEOUT_MS),
+      withTimeout(searchWikipediaLang(query, 'en'), TIMEOUT_MS),
+    ])
+    if (serperResult.status  === 'fulfilled') sources.push(...serperResult.value)
+    if (wikifrResult.status  === 'fulfilled') sources.push(...wikifrResult.value)
+    if (wikienResult.status  === 'fulfilled') sources.push(...wikienResult.value)
+  } else {
+    // Sans Serper : Wikipedia uniquement
+    const [wikifrResult, wikienResult] = await Promise.allSettled([
+      withTimeout(searchWikipediaLang(query, 'fr'), TIMEOUT_MS),
+      withTimeout(searchWikipediaLang(query, 'en'), TIMEOUT_MS),
+    ])
+    if (wikifrResult.status === 'fulfilled') sources.push(...wikifrResult.value)
+    if (wikienResult.status === 'fulfilled') sources.push(...wikienResult.value)
   }
 
-  const results = await Promise.allSettled(tasks)
-
-  const sources = []
-  for (const r of results) {
-    if (r.status === 'fulfilled') sources.push(...r.value)
-  }
-
-  // Déduplication par URL, filtre les snippets trop courts
+  // Déduplication par URL, filtre snippets trop courts
   const seen = new Set()
-  const filtered = sources.filter((s) => {
-    if (!s.url || !s.snippet || s.snippet.length < 60) return false
-    if (seen.has(s.url)) return false
-    seen.add(s.url)
+  const filtered = sources.filter(s => {
+    if (!s.snippet || s.snippet.length < 40) return false
+    const key = s.url || s.title
+    if (seen.has(key)) return false
+    seen.add(key)
     return true
   })
 
-  console.log(`[Search] ${filtered.length} sources trouvées`)
-  return filtered.slice(0, 6)
+  console.log(`[Search] ${filtered.length} sources finales (Serper: ${hasSerper})`)
+  return filtered.slice(0, 7)
 }
 
 module.exports = { searchWeb }
