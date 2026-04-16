@@ -1,107 +1,99 @@
 const https  = require('https')
 const { searchWeb } = require('./search')
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Config Groq ──────────────────────────────────────────────────────────────
+
+const GROQ_HOSTNAME = 'api.groq.com'
+const GROQ_PATH     = '/openai/v1/chat/completions'
 
 const MODELS = [
-  'mistralai/Mistral-7B-Instruct-v0.3',
-  'HuggingFaceH4/zephyr-7b-beta',
-  'tiiuae/falcon-7b-instruct',
+  'llama-3.1-8b-instant',
+  'llama-3.3-70b-versatile',
+  'mixtral-8x7b-32768',
 ]
 
-// ─── HTTP helper (module https natif — bypass fetch/undici/proxy Windows) ─────
+const TIMEOUT_MS = 30_000
 
-function httpsPost(hostname, path, body, headers = {}) {
+// ─── HTTPS POST helper ────────────────────────────────────────────────────────
+
+function httpsPost(body) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body)
+    const apiKey = process.env.GROQ_API_KEY
+    if (!apiKey) return reject(new Error('GROQ_API_KEY absent des variables d\'environnement'))
 
+    const payload = JSON.stringify(body)
     const options = {
-      hostname,
-      path,
-      method : 'POST',
-      headers: {
+      hostname: GROQ_HOSTNAME,
+      path    : GROQ_PATH,
+      method  : 'POST',
+      headers : {
         'Content-Type'  : 'application/json',
         'Content-Length': Buffer.byteLength(payload),
-        ...headers,
+        Authorization   : `Bearer ${apiKey}`,
       },
     }
-
     const req = https.request(options, (res) => {
       let data = ''
       res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => resolve({ status: res.statusCode, body: data }))
+      res.on('end', () => {
+        console.log(`[AI] Groq → HTTP ${res.statusCode}`)
+        resolve({ status: res.statusCode, body: data })
+      })
     })
-
-    req.on('error', reject)
-    req.setTimeout(90000, () => { req.destroy(new Error('HF request timeout 90s')) })
+    req.on('error', (err) => {
+      console.error('[AI] Erreur réseau :', err.message)
+      reject(err)
+    })
+    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`Timeout ${TIMEOUT_MS / 1000}s`)))
     req.write(payload)
     req.end()
   })
 }
 
-// ─── Appel HF Inference API ───────────────────────────────────────────────────
+// ─── Appel modèle ─────────────────────────────────────────────────────────────
 
-async function callHFModel(model, prompt, maxTokens = 600) {
-  const { status, body } = await httpsPost(
-    'api-inference.huggingface.co',
-    `/models/${model}`,
-    {
-      inputs: prompt,
-      parameters: {
-        max_new_tokens  : maxTokens,
-        temperature     : 0.4,
-        do_sample       : true,
-        top_p           : 0.9,
-        return_full_text: false,
-      },
-      options: {
-        wait_for_model: true,
-        use_cache     : false,
-      },
-    },
-    { Authorization: `Bearer ${process.env.HF_TOKEN}` }
-  )
+async function callModel(model, messages, maxTokens = 700) {
+  const { status, body } = await httpsPost({
+    model,
+    messages,
+    max_tokens : maxTokens,
+    temperature: 0.3,
+    top_p      : 0.9,
+    stream     : false,
+  })
 
   if (status !== 200) {
-    // Tenter de lire un message d'erreur JSON
+    let msg = `HTTP ${status}`
     try {
-      const err = JSON.parse(body)
-      throw new Error(err.error || `HTTP ${status}`)
-    } catch (_) {
-      throw new Error(`HTTP ${status}: ${body.substring(0, 120)}`)
-    }
+      const parsed = JSON.parse(body)
+      msg = parsed.error?.message || parsed.error || msg
+    } catch (_) { /* noop */ }
+    console.error(`[AI] ${model} erreur:`, body.substring(0, 300))
+    throw new Error(msg)
   }
 
   const data = JSON.parse(body)
-
-  if (Array.isArray(data) && data[0]?.generated_text) {
-    return data[0].generated_text.trim()
-  }
-  if (data.generated_text) {
-    return data.generated_text.trim()
-  }
-
-  throw new Error('Format HF inattendu : ' + body.substring(0, 120))
+  const text = data?.choices?.[0]?.message?.content
+  if (!text) throw new Error('Format inattendu : ' + body.substring(0, 200))
+  return text.trim()
 }
 
-async function callWithFallback(prompt, maxTokens = 600) {
+// ─── Fallback séquentiel ──────────────────────────────────────────────────────
+
+async function callWithFallback(messages, maxTokens = 700) {
   let lastError
   for (const model of MODELS) {
     try {
-      console.log(`[HF] Essai ${model}...`)
-      const result = await callHFModel(model, prompt, maxTokens)
-      console.log(`[HF] ✓ Succès avec ${model}`)
+      console.log(`[AI] Essai ${model}…`)
+      const result = await callModel(model, messages, maxTokens)
+      console.log(`[AI] ✓ ${model}`)
       return result
     } catch (err) {
-      console.warn(`[HF] ✗ ${model}: ${err.message.substring(0, 150)}`)
+      console.warn(`[AI] ✗ ${model}: ${err.message.substring(0, 200)}`)
       lastError = err
     }
   }
   throw lastError
-}
-
-function buildPrompt(instruction, context) {
-  return `### Instruction:\n${instruction}\n\n### Contexte:\n${context}\n\n### Réponse:\n`
 }
 
 // ─── Domaines ─────────────────────────────────────────────────────────────────
@@ -123,8 +115,8 @@ function extractDomain(url) {
   try { return new URL(url).hostname.replace(/^www\./, '') } catch (_) { return '' }
 }
 function domainReputationScore(domain) {
-  if (TRUSTED_DOMAINS.some((d) => domain.endsWith(d))) return 30
-  if (UNRELIABLE_DOMAINS.some((d) => domain.endsWith(d))) return 0
+  if (TRUSTED_DOMAINS.some(d => domain.endsWith(d))) return 30
+  if (UNRELIABLE_DOMAINS.some(d => domain.endsWith(d))) return 0
   return 15
 }
 function stripHtml(html) {
@@ -136,10 +128,9 @@ function stripHtml(html) {
     .trim()
 }
 function extractArticleMetadata(html) {
-  const lower = html.toLowerCase()
   return {
-    hasAuthor     : /author|auteur|journalist|"author"/i.test(lower),
-    hasDate       : /datetime=|publishedtime|datemodified|article:published/i.test(lower),
+    hasAuthor     : /author|auteur|journalist|"author"/i.test(html),
+    hasDate       : /datetime=|publishedtime|datemodified|article:published/i.test(html),
     hasSourceLinks: (html.match(/href="https?:\/\//g) || []).length > 3,
   }
 }
@@ -154,23 +145,40 @@ function scoreToVerdict(score) {
 // ─── checkInformation ─────────────────────────────────────────────────────────
 
 async function checkInformation(query) {
-  const sources = await searchWeb(query).catch(() => [])
+  const sources = await searchWeb(query).catch((err) => {
+    console.warn('[Search] Échec :', err.message)
+    return []
+  })
 
-  const contextBlock = sources.length > 0
-    ? sources.map((s, i) => `[${i + 1}] ${s.title} (${s.url})\n${s.snippet}`).join('\n\n')
-    : 'Aucune source trouvée.'
+  const hasSources = sources.length > 0
+  const contextBlock = hasSources
+    ? sources.map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\nExtrait: ${s.snippet}`).join('\n\n---\n\n')
+    : null
 
-  const instruction = `Tu es un expert en fact-checking. Analyse l'affirmation suivante en te basant sur les sources fournies. Réponds en français.
-Donne un verdict clair :
-- ✅ VRAI si confirmé par les sources
-- ❌ FAUX si contredit par les sources
-- ⚠️ INCERTAIN si les sources sont insuffisantes
-Cite les sources avec [1], [2], etc. Sois factuel et concis (200 mots max).`
+  const systemPrompt = hasSources
+    ? `Tu es un expert en fact-checking. Tu DOIS te baser UNIQUEMENT sur les sources fournies ci-dessous pour analyser l'affirmation. Ne fais PAS appel à tes connaissances générales si les sources contredisent ou nuancent.
 
-  const context = `Affirmation à vérifier : "${query}"\n\nSources disponibles :\n${contextBlock}`
-  const prompt   = buildPrompt(instruction, context)
+Réponds TOUJOURS en français avec cette structure :
+1. Verdict en première ligne : ✅ VRAI, ❌ FAUX, ou ⚠️ INCERTAIN
+2. Explication courte (3-5 phrases) basée sur les sources
+3. Cite obligatoirement les sources utilisées avec [1], [2], etc.
+4. Si les sources ne parlent pas directement du sujet, dis-le clairement.
 
-  const result = await callWithFallback(prompt, 500)
+Sois factuel, précis, concis (200 mots max).`
+    : `Tu es un expert en fact-checking. Aucune source web n'a été trouvée pour cette affirmation.
+Réponds en français en indiquant clairement qu'aucune source n'a pu être vérifiée, puis donne ton analyse basée sur tes connaissances générales en précisant ce caractère.
+Structure : ⚠️ INCERTAIN (sources indisponibles), puis ton analyse.`
+
+  const userMessage = hasSources
+    ? `Affirmation à vérifier : "${query}"\n\nSources trouvées sur internet :\n\n${contextBlock}`
+    : `Affirmation à vérifier : "${query}"`
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user',   content: userMessage },
+  ]
+
+  const result = await callWithFallback(messages, 600)
   return { result, sources }
 }
 
@@ -182,29 +190,26 @@ async function scoreArticleCredibility(url) {
   let metadata    = { hasAuthor: false, hasDate: false, hasSourceLinks: false }
   let fetchError  = null
 
-  // Utilise aussi le module https pour fetcher l'article (cohérent)
   try {
     const urlObj = new URL(url)
     const { status, body } = await new Promise((resolve, reject) => {
-      const options = {
-        hostname: urlObj.hostname,
-        path    : urlObj.pathname + urlObj.search,
-        method  : 'GET',
-        headers : {
-          'User-Agent': 'Mozilla/5.0 (compatible; BulbizarreFactChecker/1.0)',
-          Accept      : 'text/html',
+      const req = https.request(
+        {
+          hostname: urlObj.hostname,
+          path    : urlObj.pathname + urlObj.search,
+          method  : 'GET',
+          headers : { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
         },
-      }
-      const req = https.request(options, (res) => {
-        let data = ''
-        res.on('data', (chunk) => { data += chunk })
-        res.on('end', () => resolve({ status: res.statusCode, body: data }))
-      })
+        (res) => {
+          let data = ''
+          res.on('data', c => { data += c })
+          res.on('end', () => resolve({ status: res.statusCode, body: data }))
+        }
+      )
       req.on('error', reject)
-      req.setTimeout(10000, () => { req.destroy(new Error('Article fetch timeout')) })
+      req.setTimeout(10000, () => req.destroy(new Error('Article fetch timeout')))
       req.end()
     })
-
     if (status !== 200) throw new Error(`HTTP ${status}`)
     articleText = stripHtml(body).substring(0, 2500)
     metadata    = extractArticleMetadata(body)
@@ -228,25 +233,29 @@ async function scoreArticleCredibility(url) {
   }
 
   let llmScore = 25, llmVerdict = '', llmAnalysis = ''
-
   try {
-    const instruction = `Tu es un expert en crédibilité des médias. Analyse cet article et réponds UNIQUEMENT dans ce format exact :
-SCORE: [nombre entre 0 et 50]
+    const messages = [
+      {
+        role   : 'system',
+        content: `Tu es un expert en crédibilité des médias. Analyse l'article fourni et réponds UNIQUEMENT dans ce format exact (respecte les majuscules) :
+SCORE: [nombre entier entre 0 et 50]
 VERDICT: [Excellent / Fiable / Mitigé / Douteux / Trompeur]
-ANALYSE: [2 phrases d'explication en français]`
-
-    const context = `URL : ${url}\nDomaine : ${domain} | Auteur : ${metadata.hasAuthor ? 'oui' : 'non'} | Date : ${metadata.hasDate ? 'oui' : 'non'}\n\nExtrait :\n${articleText}`
-    const response = await callWithFallback(buildPrompt(instruction, context), 200)
-
+ANALYSE: [2 phrases d'explication en français]`,
+      },
+      {
+        role   : 'user',
+        content: `URL : ${url}\nDomaine : ${domain} | Auteur : ${metadata.hasAuthor ? 'oui' : 'non'} | Date : ${metadata.hasDate ? 'oui' : 'non'}\n\nExtrait de l'article :\n${articleText}`,
+      },
+    ]
+    const response = await callWithFallback(messages, 250)
     const scoreM   = response.match(/SCORE:\s*(\d+)/)
     const verdictM = response.match(/VERDICT:\s*(.+)/m)
     const analyseM = response.match(/ANALYSE:\s*([\s\S]+)/)
-
-    if (scoreM)   llmScore   = Math.min(50, parseInt(scoreM[1], 10))
-    if (verdictM) llmVerdict = verdictM[1].trim()
+    if (scoreM)   llmScore    = Math.min(50, parseInt(scoreM[1], 10))
+    if (verdictM) llmVerdict  = verdictM[1].trim()
     if (analyseM) llmAnalysis = analyseM[1].trim()
   } catch (err) {
-    console.error('[HF] Analyse URL échouée :', err.message)
+    console.error('[AI] Analyse URL échouée :', err.message)
     llmAnalysis = 'Analyse IA indisponible. Score calculé sur les critères structurels.'
   }
 
