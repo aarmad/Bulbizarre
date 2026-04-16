@@ -1,55 +1,45 @@
-const https = require('https')
+const https  = require('https')
 const { searchWeb } = require('./search')
 
 // ─── Config Groq ──────────────────────────────────────────────────────────────
-// Groq : gratuit, ~500 tokens/sec, API compatible OpenAI
-// Clé sur console.groq.com → API Keys → GROQ_API_KEY
 
-const GROQ_HOSTNAME = 'api.groq.com'
-const GROQ_PATH = '/openai/v1/chat/completions'
-
-// Modèles Groq (du plus rapide au plus puissant)
 const MODELS = [
-  'llama-3.1-8b-instant',      // très rapide, bon pour le fact-checking simple
-  'llama-3.3-70b-versatile',   // puissant, un peu plus lent
-  'mixtral-8x7b-32768',        // bon compromis
+  'llama-3.1-8b-instant',
+  'llama-3.3-70b-versatile',
+  'mixtral-8x7b-32768',
 ]
 
-const TIMEOUT_MS = 30_000  // Groq répond en < 5s, 30s = largement suffisant
+const TIMEOUT_MS = 30_000
 
 // ─── HTTPS POST helper ────────────────────────────────────────────────────────
 
-function httpsPost(hostname, path, body, apiKey) {
+function httpsPost(body) {
   return new Promise((resolve, reject) => {
     const apiKey = process.env.GROQ_API_KEY
     if (!apiKey) return reject(new Error('GROQ_API_KEY absent des variables d\'environnement'))
 
     const payload = JSON.stringify(body)
-    const options = {
-      hostname: GROQ_HOSTNAME,
-      path: GROQ_PATH,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload),
-        Authorization: `Bearer ${apiKey}`,
-        Authorization: `Bearer ${apiKey}`,
+    const req = https.request(
+      {
+        hostname: 'api.groq.com',
+        path    : '/openai/v1/chat/completions',
+        method  : 'POST',
+        headers : {
+          'Content-Type'  : 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          Authorization   : `Bearer ${apiKey}`,
+        },
       },
-    }
-    const req = https.request(options, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        console.log(`[AI] ${hostname}${path} → HTTP ${res.statusCode}`)
-        resolve({ status: res.statusCode, body: data })
-      })
-    })
-    req.on('error', (err) => {
-      console.error('[AI] Erreur réseau :', err.message)
-      reject(err)
-    })
-    req.setTimeout(TIMEOUT_MS, () => req.destroy(new Error(`Timeout ${TIMEOUT_MS / 1000}s`)))
-    req.on('error', (err) => {
+      (res) => {
+        let data = ''
+        res.on('data', chunk => { data += chunk })
+        res.on('end', () => {
+          console.log(`[AI] Groq → HTTP ${res.statusCode}`)
+          resolve({ status: res.statusCode, body: data })
+        })
+      }
+    )
+    req.on('error', err => {
       console.error('[AI] Erreur réseau :', err.message)
       reject(err)
     })
@@ -59,22 +49,24 @@ function httpsPost(hostname, path, body, apiKey) {
   })
 }
 
-// ─── Appel Groq ───────────────────────────────────────────────────────────────
+// ─── Appel modèle ─────────────────────────────────────────────────────────────
 
-async function callModel(model, messages, maxTokens = 600) {
-  const apiKey = process.env.GROQ_API_KEY
-  if (!apiKey) throw new Error('GROQ_API_KEY absent des variables d\'environnement')
-
-  const { status, body } = await httpsPost(
-    GROQ_HOSTNAME,
-    GROQ_PATH,
-    { model, messages, max_tokens: maxTokens, temperature: 0.4, top_p: 0.9, stream: false },
-    apiKey
-  )
+async function callModel(model, messages, maxTokens = 700) {
+  const { status, body } = await httpsPost({
+    model,
+    messages,
+    max_tokens : maxTokens,
+    temperature: 0.3,
+    top_p      : 0.9,
+    stream     : false,
+  })
 
   if (status !== 200) {
     let msg = `HTTP ${status}`
-    try { msg = JSON.parse(body).error?.message || JSON.parse(body).error || msg } catch (_) { /* noop */ }
+    try {
+      const parsed = JSON.parse(body)
+      msg = parsed.error?.message || parsed.error || msg
+    } catch (_) { /* noop */ }
     console.error(`[AI] ${model} erreur:`, body.substring(0, 300))
     throw new Error(msg)
   }
@@ -86,26 +78,16 @@ async function callModel(model, messages, maxTokens = 600) {
 }
 
 // ─── Fallback séquentiel ──────────────────────────────────────────────────────
-const text = data?.choices?.[0]?.message?.content
-if (!text) throw new Error('Format inattendu : ' + body.substring(0, 200))
-return text.trim()
-}
 
-// ─── Fallback séquentiel ──────────────────────────────────────────────────────
-
-async function callWithFallback(messages, maxTokens = 600) {
+async function callWithFallback(messages, maxTokens = 700) {
   let lastError
   for (const model of MODELS) {
     try {
       console.log(`[AI] Essai ${model}…`)
       const result = await callModel(model, messages, maxTokens)
       console.log(`[AI] ✓ ${model}`)
-      console.log(`[AI] Essai ${model}…`)
-      const result = await callModel(model, messages, maxTokens)
-      console.log(`[AI] ✓ ${model}`)
       return result
     } catch (err) {
-      console.warn(`[AI] ✗ ${model}: ${err.message.substring(0, 200)}`)
       console.warn(`[AI] ✗ ${model}: ${err.message.substring(0, 200)}`)
       lastError = err
     }
@@ -134,8 +116,6 @@ function extractDomain(url) {
 function domainReputationScore(domain) {
   if (TRUSTED_DOMAINS.some(d => domain.endsWith(d))) return 30
   if (UNRELIABLE_DOMAINS.some(d => domain.endsWith(d))) return 0
-  if (TRUSTED_DOMAINS.some(d => domain.endsWith(d))) return 30
-  if (UNRELIABLE_DOMAINS.some(d => domain.endsWith(d))) return 0
   return 15
 }
 function stripHtml(html) {
@@ -148,8 +128,8 @@ function stripHtml(html) {
 }
 function extractArticleMetadata(html) {
   return {
-    hasAuthor: /author|auteur|journalist|"author"/i.test(html),
-    hasDate: /datetime=|publishedtime|datemodified|article:published/i.test(html),
+    hasAuthor     : /author|auteur|journalist|"author"/i.test(html),
+    hasDate       : /datetime=|publishedtime|datemodified|article:published/i.test(html),
     hasSourceLinks: (html.match(/href="https?:\/\//g) || []).length > 3,
   }
 }
@@ -164,32 +144,40 @@ function scoreToVerdict(score) {
 // ─── checkInformation ─────────────────────────────────────────────────────────
 
 async function checkInformation(query) {
-  const sources = await searchWeb(query).catch((err) => {
+  const sources = await searchWeb(query).catch(err => {
     console.warn('[Search] Échec :', err.message)
     return []
   })
 
-  const contextBlock = sources.length > 0
-    ? sources.map((s, i) => `[${i + 1}] ${s.title} (${s.url})\n${s.snippet}`).join('\n\n')
-    : 'Aucune source trouvée en ligne.'
+  const hasSources  = sources.length > 0
+  const contextBlock = hasSources
+    ? sources.map((s, i) => `[${i + 1}] ${s.title}\nURL: ${s.url}\nExtrait: ${s.snippet}`).join('\n\n---\n\n')
+    : null
+
+  const systemPrompt = hasSources
+    ? `Tu es un expert en fact-checking. Analyse l'affirmation en te basant UNIQUEMENT sur les sources fournies. Ne fais pas appel à tes connaissances générales si les sources le couvrent déjà.
+
+Réponds en français avec cette structure :
+1. Verdict en première ligne : ✅ VRAI, ❌ FAUX, ou ⚠️ INCERTAIN
+2. Explication (3-5 phrases) basée sur les sources
+3. Cite les sources utilisées : [1], [2], etc.
+4. Si les sources ne couvrent pas directement le sujet, dis-le.
+
+Sois factuel, précis, concis (200 mots max).`
+    : `Tu es un expert en fact-checking. Aucune source web n'a été trouvée.
+Réponds en français en indiquant qu'aucune source n'a pu être vérifiée, puis donne ton analyse basée sur tes connaissances en précisant ce caractère.
+Format : ⚠️ INCERTAIN (sources indisponibles), puis ton analyse.`
+
+  const userMessage = hasSources
+    ? `Affirmation à vérifier : "${query}"\n\nSources trouvées :\n\n${contextBlock}`
+    : `Affirmation à vérifier : "${query}"`
 
   const messages = [
-    {
-      role: 'system',
-      content: `Tu es un expert en fact-checking. Analyse l'affirmation fournie en te basant sur les sources disponibles. Réponds TOUJOURS en français.
-Commence ta réponse par un verdict clair :
-- ✅ VRAI si confirmé par les sources
-- ❌ FAUX si contredit par les sources
-- ⚠️ INCERTAIN si les sources sont insuffisantes ou contradictoires
-Cite les sources avec [1], [2], etc. quand disponibles. Sois factuel et concis (200 mots maximum).`,
-    },
-    {
-      role: 'user',
-      content: `Affirmation à vérifier : "${query}"\n\nSources disponibles :\n${contextBlock}`,
-    },
+    { role: 'system', content: systemPrompt },
+    { role: 'user',   content: userMessage  },
   ]
 
-  const result = await callWithFallback(messages, 500)
+  const result = await callWithFallback(messages, 600)
   return { result, sources }
 }
 
@@ -198,16 +186,18 @@ Cite les sources avec [1], [2], etc. quand disponibles. Sois factuel et concis (
 async function scoreArticleCredibility(url) {
   const domain = extractDomain(url)
   let articleText = ''
-  let metadata = { hasAuthor: false, hasDate: false, hasSourceLinks: false }
-  let fetchError = null
+  let metadata    = { hasAuthor: false, hasDate: false, hasSourceLinks: false }
+  let fetchError  = null
 
   try {
     const urlObj = new URL(url)
     const { status, body } = await new Promise((resolve, reject) => {
       const req = https.request(
         {
-          hostname: urlObj.hostname, path: urlObj.pathname + urlObj.search, method: 'GET',
-          headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' }
+          hostname: urlObj.hostname,
+          path    : urlObj.pathname + urlObj.search,
+          method  : 'GET',
+          headers : { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
         },
         (res) => {
           let data = ''
@@ -217,24 +207,23 @@ async function scoreArticleCredibility(url) {
       )
       req.on('error', reject)
       req.setTimeout(10000, () => req.destroy(new Error('Article fetch timeout')))
-      req.setTimeout(10000, () => req.destroy(new Error('Article fetch timeout')))
       req.end()
     })
     if (status !== 200) throw new Error(`HTTP ${status}`)
     articleText = stripHtml(body).substring(0, 2500)
-    metadata = extractArticleMetadata(body)
+    metadata    = extractArticleMetadata(body)
   } catch (err) {
     fetchError = err.message
   }
 
-  const domainScore = domainReputationScore(domain)
+  const domainScore    = domainReputationScore(domain)
   const structureScore = (metadata.hasAuthor ? 10 : 0) + (metadata.hasDate ? 5 : 0) + (metadata.hasSourceLinks ? 5 : 0)
 
   if (fetchError || !articleText) {
     const base = Math.min(100, domainScore + structureScore + 25)
     return {
-      score: base,
-      verdict: scoreToVerdict(base),
+      score   : base,
+      verdict : scoreToVerdict(base),
       analysis: fetchError
         ? `Impossible d'accéder à l'article : ${fetchError}. Score basé sur la réputation du domaine "${domain}".`
         : 'Contenu non disponible.',
@@ -246,36 +235,33 @@ async function scoreArticleCredibility(url) {
   try {
     const messages = [
       {
-        role: 'system',
-        content: `Tu es un expert en crédibilité des médias. Analyse l'article et réponds UNIQUEMENT dans ce format exact :
+        role   : 'system',
+        content: `Tu es un expert en crédibilité des médias. Analyse l'article fourni et réponds UNIQUEMENT dans ce format exact :
 SCORE: [nombre entier entre 0 et 50]
 VERDICT: [Excellent / Fiable / Mitigé / Douteux / Trompeur]
 ANALYSE: [2 phrases d'explication en français]`,
       },
       {
-        role: 'user',
+        role   : 'user',
         content: `URL : ${url}\nDomaine : ${domain} | Auteur : ${metadata.hasAuthor ? 'oui' : 'non'} | Date : ${metadata.hasDate ? 'oui' : 'non'}\n\nExtrait :\n${articleText}`,
       },
     ]
-    const response = await callWithFallback(messages, 200)
-    const scoreM = response.match(/SCORE:\s*(\d+)/)
+    const response = await callWithFallback(messages, 250)
+    const scoreM   = response.match(/SCORE:\s*(\d+)/)
     const verdictM = response.match(/VERDICT:\s*(.+)/m)
     const analyseM = response.match(/ANALYSE:\s*([\s\S]+)/)
-    if (scoreM) llmScore = Math.min(50, parseInt(scoreM[1], 10))
-    if (verdictM) llmVerdict = verdictM[1].trim()
-    if (scoreM) llmScore = Math.min(50, parseInt(scoreM[1], 10))
-    if (verdictM) llmVerdict = verdictM[1].trim()
+    if (scoreM)   llmScore    = Math.min(50, parseInt(scoreM[1], 10))
+    if (verdictM) llmVerdict  = verdictM[1].trim()
     if (analyseM) llmAnalysis = analyseM[1].trim()
   } catch (err) {
-    console.error('[AI] Analyse URL échouée :', err.message)
     console.error('[AI] Analyse URL échouée :', err.message)
     llmAnalysis = 'Analyse IA indisponible. Score calculé sur les critères structurels.'
   }
 
   const finalScore = Math.min(100, domainScore + structureScore + llmScore)
   return {
-    score: finalScore,
-    verdict: llmVerdict || scoreToVerdict(finalScore),
+    score   : finalScore,
+    verdict : llmVerdict  || scoreToVerdict(finalScore),
     analysis: llmAnalysis || `Domaine : ${domainScore}/30 — Structure : ${structureScore}/20.`,
     domain, metadata,
   }
