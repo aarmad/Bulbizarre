@@ -135,45 +135,46 @@ const handleSearchHistory = async (req, res) => {
 };
 
 const handleDeleteHistoryEntry = async (req, res) => {
-  const { id } = req.params;
-  const { userId } = req.query;
+  const { id }     = req.params
+  const { userId } = req.query
 
-  if (!userId) {
-    return res.status(400).json({ error: "userId requis." });
-  }
+  if (!userId) return res.status(400).json({ error: 'userId requis.' })
 
   try {
-    const result = await History.findOneAndDelete({ _id: id, userId });
+    const mongoose = require('mongoose')
+    const oid = mongoose.Types.ObjectId.isValid(id) ? new mongoose.Types.ObjectId(id) : null
+    if (!oid) return res.status(400).json({ error: 'ID invalide.' })
 
-    if (!result) {
-      return res.status(404).json({ error: "Entrée non trouvée." });
-    }
+    const result = await History.findOneAndDelete({
+      _id   : oid,
+      userId: mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId,
+    })
 
-    res.json({ message: "Entrée supprimée." });
+    if (!result) return res.status(404).json({ error: 'Entrée non trouvée.' })
+
+    res.json({ ok: true })
   } catch (error) {
-    console.error("handleDeleteHistoryEntry error:", error.message);
-    res.status(500).json({ error: "Erreur lors de la suppression." });
+    console.error('handleDeleteHistoryEntry error:', error.message)
+    res.status(500).json({ error: 'Erreur lors de la suppression.' })
   }
-};
+}
 
 const handleClearHistory = async (req, res) => {
-  const { userId } = req.query;
+  const { userId } = req.query
 
-  if (!userId) {
-    return res.status(400).json({ error: "userId requis." });
-  }
+  if (!userId) return res.status(400).json({ error: 'userId requis.' })
 
   try {
-    await History.deleteMany({ userId });
-
-    res.json({ message: "Historique vidé." });
+    const mongoose = require('mongoose')
+    await History.deleteMany({
+      userId: mongoose.Types.ObjectId.isValid(userId) ? new mongoose.Types.ObjectId(userId) : userId,
+    })
+    res.json({ ok: true })
   } catch (error) {
-    console.error("handleClearHistory error:", error.message);
-    res
-      .status(500)
-      .json({ error: "Erreur lors du nettoyage de l'historique." });
+    console.error('handleClearHistory error:', error.message)
+    res.status(500).json({ error: "Erreur lors du nettoyage de l'historique." })
   }
-};
+}
 
 module.exports = {
   handleChat,

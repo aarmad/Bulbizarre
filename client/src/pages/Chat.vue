@@ -235,8 +235,10 @@ const loadHistoryItem = (item) => {
 const deleteItem = async (id) => {
   try {
     await verifyApi.deleteHistory(id, userId)
-    history.value = history.value.filter(h => h._id !== id)
-  } catch (_) {}
+    history.value = history.value.filter(h => String(h._id) !== String(id))
+  } catch (err) {
+    console.error('Erreur suppression:', err.response?.data || err.message)
+  }
 }
 
 const confirmClear = async () => {
@@ -244,7 +246,9 @@ const confirmClear = async () => {
   try {
     await verifyApi.clearHistory(userId)
     history.value = []
-  } catch (_) {}
+  } catch (err) {
+    console.error('Erreur clear:', err.response?.data || err.message)
+  }
 }
 
 const handleSend = async () => {
