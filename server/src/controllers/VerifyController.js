@@ -9,17 +9,17 @@ const handleChat = async (req, res) => {
   }
 
   try {
-    const { result, sources } = await HFService.checkInformation(query.trim());
+    const { verdict, explanation, sources } = await HFService.checkInformation(query.trim());
 
     if (userId) {
       await History.create({
         userId,
         type: "chat",
-        content: { query, response: result, sources },
+        content: { query, verdict, response: explanation, sources },
       });
     }
 
-    res.json({ result, sources });
+    res.json({ verdict, explanation, sources });
   } catch (error) {
     console.error("handleChat error:", error.message);
     res

@@ -277,39 +277,39 @@ async function checkInformation(query) {
         .join("\n\n---\n\n")
     : null;
 
+  const verdictChoices = `VRAI | PLUTÔT VRAI | TROMPEUR | INCERTAIN | PLUTÔT FAUX | FAUX`;
+
   const systemPrompt = hasSources
-    ? `Tu es un expert en fact-checking rigoureux. Ta mission : évaluer précisément l'affirmation posée, pas un fait adjacent ou connexe.
+    ? `Tu es un expert en fact-checking rigoureux. Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ni après.
 
-ÉTAPE 1 — Identifie exactement ce que l'affirmation prétend.
-ÉTAPE 2 — Cherche dans les sources une confirmation ou infirmation DIRECTE de cette affirmation précise.
-ÉTAPE 3 — Choisis LE verdict le plus précis parmi :
-  [VRAI] — confirmé par des sources fiables
-  [PLUTÔT VRAI] — globalement exact mais avec des nuances importantes
-  [TROMPEUR] — techniquement exact mais présenté de manière à induire en erreur
-  [INCERTAIN] — les sources ne permettent pas de trancher
-  [PLUTÔT FAUX] — probablement faux mais sans certitude absolue
-  [FAUX] — contredit clairement par des sources fiables
+Format de réponse OBLIGATOIRE :
+{"verdict":"<choix>","explanation":"<texte en français>"}
 
-RÈGLES IMPORTANTES :
-- Ne confonds pas "X a dit que Y est Z" avec "Y est Z"
-- Ne confonds pas une accusation avec un fait établi
-- Si la question est une question (ex: "est-il...?"), réponds sur la réalité du fait, pas sur l'existence du débat
-- Si les sources parlent d'un fait connexe mais pas de l'affirmation exacte, utilise [INCERTAIN]
+Valeurs autorisées pour "verdict" (choisis la plus précise) :
+- "VRAI" : affirmation confirmée par des sources fiables
+- "PLUTÔT VRAI" : globalement exact mais avec nuances importantes
+- "TROMPEUR" : techniquement exact mais présenté pour induire en erreur
+- "INCERTAIN" : sources insuffisantes pour trancher
+- "PLUTÔT FAUX" : probablement faux mais sans certitude absolue
+- "FAUX" : clairement contredit par des sources fiables
 
-Réponds en français avec cette structure :
-1. Première ligne OBLIGATOIREMENT : le verdict entre crochets (ex: [FAUX])
-2. Explication directe et précise (3-5 phrases) basée sur les sources
-3. Sources citées : [1], [2], etc.
+Règles strictes :
+- Évalue l'affirmation EXACTE, pas un fait adjacent ou connexe
+- "X a dit que Y est Z" ≠ "Y est Z" → si la question porte sur Y, réponds sur Y
+- Une accusation n'est pas un fait établi
+- Si les sources parlent autour du sujet sans confirmer/infirmer directement → "INCERTAIN"
+- L'explication doit être en français, 3-5 phrases, citer les sources [1] [2] etc.`
+    : `Tu es un expert en fact-checking rigoureux. Réponds UNIQUEMENT avec un objet JSON valide, sans texte avant ni après.
 
-Sois factuel, précis, sans opinion (250 mots max).`
-    : `Tu es un expert en fact-checking rigoureux. Aucune source web n'a été trouvée pour cette affirmation.
+Format de réponse OBLIGATOIRE :
+{"verdict":"<choix>","explanation":"<texte en français>"}
 
-Identifie d'abord exactement ce que l'affirmation prétend, puis réponds en français.
-Commence OBLIGATOIREMENT par l'un de ces verdicts :
-[VRAI] / [PLUTÔT VRAI] / [TROMPEUR] / [INCERTAIN] / [PLUTÔT FAUX] / [FAUX]
+Valeurs autorisées : ${verdictChoices}
 
-Précise que ton analyse est basée sur tes connaissances sans sources actuelles.
-Ne confonds pas un fait connexe avec l'affirmation réelle.`;
+Règles strictes :
+- Évalue l'affirmation EXACTE, pas un fait adjacent
+- Précise que l'analyse est basée sur tes connaissances sans sources en temps réel
+- L'explication en français, 3-5 phrases`;
 
   const userMessage = hasSources
     ? `Affirmation à vérifier : "${query}"\n\nSources trouvées :\n\n${contextBlock}`
@@ -320,8 +320,34 @@ Ne confonds pas un fait connexe avec l'affirmation réelle.`;
     { role: "user", content: userMessage },
   ];
 
-  const result = await callWithFallback(messages, 700);
-  return { result, sources };
+  const raw = await callWithFallback(messages, 700);
+
+  // Parse JSON response
+  let verdict = "INCERTAIN";
+  let explanation = raw;
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const VALID_VERDICTS = ["VRAI", "PLUTÔT VRAI", "TROMPEUR", "INCERTAIN", "PLUTÔT FAUX", "FAUX"];
+      if (parsed.verdict && VALID_VERDICTS.includes(parsed.verdict.trim().toUpperCase())) {
+        verdict = parsed.verdict.trim().toUpperCase();
+      }
+      if (parsed.explanation) explanation = parsed.explanation.trim();
+    }
+  } catch (_) {
+    // fallback: try to detect verdict in raw text
+    const verdictMap = [
+      ["PLUTÔT VRAI", "PLUTÔT VRAI"], ["PLUTÔT FAUX", "PLUTÔT FAUX"],
+      ["TROMPEUR", "TROMPEUR"], ["INCERTAIN", "INCERTAIN"],
+      ["VRAI", "VRAI"], ["FAUX", "FAUX"],
+    ];
+    for (const [kw, v] of verdictMap) {
+      if (raw.toUpperCase().includes(kw)) { verdict = v; break; }
+    }
+  }
+
+  return { verdict, explanation, sources };
 }
 
 // ─── scoreArticleCredibility ──────────────────────────────────────────────────
