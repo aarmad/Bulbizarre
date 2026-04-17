@@ -275,6 +275,20 @@ const handleVerify = async () => {
   margin-left: 64px;
 }
 
+@media (max-width: 640px) {
+  .verify-page      { gap: 14px; }
+  .verify-header    { padding: 18px 18px; }
+  .verify-desc      { margin-left: 0; margin-top: 10px; }
+  .verify-header-inner { gap: 12px; }
+  .verify-title     { font-size: 20px; }
+  .verify-icon      { width: 40px; height: 40px; }
+  .input-card       { padding: 16px 18px; }
+  .input-row        { flex-direction: column; align-items: stretch; gap: 12px; }
+  .analyze-btn      { width: 100%; justify-content: center; }
+  .score-card,
+  .details-card     { padding: 18px 18px; }
+}
+
 /* ─── INPUT CARD ──────────────────────────────── */
 .input-card { padding: 22px 26px; }
 
@@ -368,6 +382,10 @@ const handleVerify = async () => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
+}
+
+@media (max-width: 640px) {
+  .result-grid { grid-template-columns: 1fr; }
 }
 
 /* ─── SCORE CARD ──────────────────────────────── */
