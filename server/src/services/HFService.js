@@ -278,17 +278,38 @@ async function checkInformation(query) {
     : null;
 
   const systemPrompt = hasSources
-    ? `Tu es un expert en fact-checking. Analyse l'affirmation en te basant UNIQUEMENT sur les sources fournies.
+    ? `Tu es un expert en fact-checking rigoureux. Ta mission : évaluer précisément l'affirmation posée, pas un fait adjacent ou connexe.
+
+ÉTAPE 1 — Identifie exactement ce que l'affirmation prétend.
+ÉTAPE 2 — Cherche dans les sources une confirmation ou infirmation DIRECTE de cette affirmation précise.
+ÉTAPE 3 — Choisis LE verdict le plus précis parmi :
+  [VRAI] — confirmé par des sources fiables
+  [PLUTÔT VRAI] — globalement exact mais avec des nuances importantes
+  [TROMPEUR] — techniquement exact mais présenté de manière à induire en erreur
+  [INCERTAIN] — les sources ne permettent pas de trancher
+  [PLUTÔT FAUX] — probablement faux mais sans certitude absolue
+  [FAUX] — contredit clairement par des sources fiables
+
+RÈGLES IMPORTANTES :
+- Ne confonds pas "X a dit que Y est Z" avec "Y est Z"
+- Ne confonds pas une accusation avec un fait établi
+- Si la question est une question (ex: "est-il...?"), réponds sur la réalité du fait, pas sur l'existence du débat
+- Si les sources parlent d'un fait connexe mais pas de l'affirmation exacte, utilise [INCERTAIN]
 
 Réponds en français avec cette structure :
-1. Première ligne obligatoirement : [VRAI], [FAUX], ou [INCERTAIN]
-2. Explication (3-5 phrases) basée sur les sources
-3. Cite les sources utilisées : [1], [2], etc.
-4. Si les sources ne couvrent pas directement le sujet, dis-le.
+1. Première ligne OBLIGATOIREMENT : le verdict entre crochets (ex: [FAUX])
+2. Explication directe et précise (3-5 phrases) basée sur les sources
+3. Sources citées : [1], [2], etc.
 
-Sois factuel, précis, concis (200 mots max).`
-    : `Tu es un expert en fact-checking. Aucune source web n'a été trouvée.
-Réponds en français. Commence obligatoirement par [INCERTAIN] puis donne ton analyse basée sur tes connaissances en précisant ce caractère.`;
+Sois factuel, précis, sans opinion (250 mots max).`
+    : `Tu es un expert en fact-checking rigoureux. Aucune source web n'a été trouvée pour cette affirmation.
+
+Identifie d'abord exactement ce que l'affirmation prétend, puis réponds en français.
+Commence OBLIGATOIREMENT par l'un de ces verdicts :
+[VRAI] / [PLUTÔT VRAI] / [TROMPEUR] / [INCERTAIN] / [PLUTÔT FAUX] / [FAUX]
+
+Précise que ton analyse est basée sur tes connaissances sans sources actuelles.
+Ne confonds pas un fait connexe avec l'affirmation réelle.`;
 
   const userMessage = hasSources
     ? `Affirmation à vérifier : "${query}"\n\nSources trouvées :\n\n${contextBlock}`
@@ -299,7 +320,7 @@ Réponds en français. Commence obligatoirement par [INCERTAIN] puis donne ton a
     { role: "user", content: userMessage },
   ];
 
-  const result = await callWithFallback(messages, 600);
+  const result = await callWithFallback(messages, 700);
   return { result, sources };
 }
 

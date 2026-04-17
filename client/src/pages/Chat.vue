@@ -204,9 +204,12 @@ function formatDate(date) {
 function formatContent(text) {
   if (!text) return ''
   return text
-    .replace(/\[VRAI\]/g,      '<span class="verdict-badge verdict-true">VRAI</span>')
-    .replace(/\[FAUX\]/g,      '<span class="verdict-badge verdict-false">FAUX</span>')
-    .replace(/\[INCERTAIN\]/g, '<span class="verdict-badge verdict-uncertain">INCERTAIN</span>')
+    .replace(/\[VRAI\]/g,         '<span class="verdict-badge verdict-true">VRAI</span>')
+    .replace(/\[PLUTÔT VRAI\]/g,  '<span class="verdict-badge verdict-mostly-true">PLUTÔT VRAI</span>')
+    .replace(/\[TROMPEUR\]/g,     '<span class="verdict-badge verdict-misleading">TROMPEUR</span>')
+    .replace(/\[INCERTAIN\]/g,    '<span class="verdict-badge verdict-uncertain">INCERTAIN</span>')
+    .replace(/\[PLUTÔT FAUX\]/g,  '<span class="verdict-badge verdict-mostly-false">PLUTÔT FAUX</span>')
+    .replace(/\[FAUX\]/g,         '<span class="verdict-badge verdict-false">FAUX</span>')
     .replace(/\n/g, '<br/>')
 }
 
@@ -558,9 +561,12 @@ onMounted(loadHistory)
   margin-right: 4px;
   vertical-align: middle;
 }
-:deep(.verdict-true)      { color: #00c851; border-color: #00c851; background: rgba(0,200,81,.1); }
-:deep(.verdict-false)     { color: #ff4444; border-color: #ff4444; background: rgba(255,68,68,.1); }
-:deep(.verdict-uncertain) { color: #ffbb33; border-color: #ffbb33; background: rgba(255,187,51,.1); }
+:deep(.verdict-true)         { color: #00c851; border-color: #00c851; background: rgba(0,200,81,.1); }
+:deep(.verdict-mostly-true)  { color: #56c45e; border-color: #56c45e; background: rgba(86,196,94,.1); }
+:deep(.verdict-misleading)   { color: #ff8800; border-color: #ff8800; background: rgba(255,136,0,.1); }
+:deep(.verdict-uncertain)    { color: #ffbb33; border-color: #ffbb33; background: rgba(255,187,51,.1); }
+:deep(.verdict-mostly-false) { color: #ff6622; border-color: #ff6622; background: rgba(255,102,34,.1); }
+:deep(.verdict-false)        { color: #ff4444; border-color: #ff4444; background: rgba(255,68,68,.1); }
 
 /* ── Sources ──────────────────────────────────────── */
 .sources-block {
